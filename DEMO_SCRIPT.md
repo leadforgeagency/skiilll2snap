@@ -2,7 +2,7 @@
 
 **[0:00 Hook]** "Every room here has a whiteboard full of knowledge that will be erased tonight. Every workshop, cafe, and lab in the world has the same problem — the expert knows how, and it's trapped in a photo nobody can use. Agent Skills can fix that, but nobody writes them by hand. So we made the camera write them."
 
-**[0:20 Live snap]** Open the live Vercel site. Take a photo of ANY whiteboard / notebook in the venue (or click **⚡ Load Sample Sketch**). Press **Compile to Skill**.
+**[0:20 Live snap]** Open the live Vercel site — **skiilll2snap.vercel.app**. Take a photo of ANY whiteboard / notebook in the venue (or click **⚡ Load Sample Sketch**). Press **Compile to Skill**.
 "Open-weight Gemma 4 Vision just read that — not Gemini, Gemma, open weights, named in our README with its terms. And watch the flowchart build itself — that is the exact workflow structure Gemma detected."
 
 **[0:45 The proof]** Open the **SKILL.md Spec** tab.

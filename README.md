@@ -2,6 +2,8 @@
 
 **Snap a photo of know-how. Get a reusable Agent Skill.**
 
+**▶ Live demo:** https://skiilll2snap.vercel.app · **Code:** https://github.com/leadforgeagency/skiilll2snap (MIT)
+
 The world's expertise is trapped where AI agents can't use it: on whiteboards, in handwritten notebooks, in screenshots of wikis, on taped-up SOP sheets above machines. Writing an Agent Skill by hand is slow and most people don't know the format — so that knowledge never becomes reusable.
 
 **Snap2Skill fixes that in 30 seconds:** take a snap → open-weight **Gemma Vision** reads it and extracts the procedure → deterministic code builds a `SKILL.md` that **provably complies** with the Agent Skills open standard, validates it check-by-check, and hands you a zip you can drop into any project.
@@ -58,8 +60,8 @@ Import this repository in Vercel → Framework: **Flask**, root `./` → add `GO
 ## Run it locally
 
 ```bash
-git clone <your-repo-url>
-cd snap2skill
+git clone https://github.com/leadforgeagency/skiilll2snap.git
+cd skiilll2snap
 pip install -r requirements.txt
 cp .env.example .env   # add your Google AI Studio key
 python app.py          # the same Flask app Vercel runs → http://127.0.0.1:3000
