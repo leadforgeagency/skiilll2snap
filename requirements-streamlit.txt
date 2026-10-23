@@ -1,5 +1,0 @@
-# Optional legacy local Streamlit edition (streamlit_app.py).
-# The production Vercel app uses requirements.txt and does not need Streamlit.
--r requirements.txt
-streamlit>=1.40
-Pillow>=10.0
