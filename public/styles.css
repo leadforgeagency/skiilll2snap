@@ -1,15 +1,19 @@
-/* Snap2Skill design system — strict palette, nothing else:
-   Background #09090b · Surface #18181b · Border #27272a ·
-   Accent #6366f1 · Text #fafafa · Muted #a1a1aa            */
+/* Snap2Skill design system — bright palette (supersedes the dark scheme
+   at Jawad's request, 2026-10-23):
+   Canvas #eef1ff · Surface #ffffff · Panel tint #f6f8ff · Border #d8defc ·
+   Accent #7c3aed (violet→fuchsia gradient on primary actions) ·
+   Text #0f172a · Muted #64748b                                    */
 :root {
-  --bg: #09090b;
-  --surface: #18181b;
-  --border: #27272a;
-  --accent: #6366f1;
-  --accent-soft: rgba(99, 102, 241, 0.14);
-  --accent-glow: rgba(99, 102, 241, 0.45);
-  --text: #fafafa;
-  --muted: #a1a1aa;
+  --bg: #eef1ff;
+  --surface: #ffffff;
+  --surface-2: #f6f8ff;
+  --border: #d8defc;
+  --accent: #7c3aed;
+  --accent-soft: rgba(124, 58, 237, 0.10);
+  --accent-glow: rgba(124, 58, 237, 0.38);
+  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #d946ef 100%);
+  --text: #0f172a;
+  --muted: #64748b;
   --radius: 12px;
 }
 
@@ -19,7 +23,7 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: linear-gradient(160deg, #dbeafe 0%, #eef1ff 46%, #fdeffb 100%);
   color: var(--text);
   font: 15px/1.55 Inter, ui-sans-system, system-ui, -apple-system, "Segoe UI", sans-serif;
   display: flex;
@@ -27,13 +31,13 @@ body {
   overflow: hidden;
 }
 
-::selection { background: var(--accent); color: var(--text); }
+::selection { background: var(--accent); color: #ffffff; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .skip-link {
   position: absolute; left: -999px; top: 0; z-index: 50;
-  background: var(--accent); color: var(--text); padding: 8px 14px; border-radius: 0 0 8px 0;
+  background: var(--accent); color: #ffffff; padding: 8px 14px; border-radius: 0 0 8px 0;
 }
 .skip-link:focus { left: 0; }
 
@@ -60,7 +64,7 @@ body {
 .brand-mark {
   width: 30px; height: 30px; border-radius: 8px;
   display: grid; place-items: center;
-  background: var(--accent); color: var(--text);
+  background: var(--accent-gradient); color: #ffffff;
   font-weight: 800; font-size: 16px;
   box-shadow: 0 0 18px var(--accent-glow);
 }
@@ -114,6 +118,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: 0 14px 34px rgba(99, 102, 241, 0.12);
 }
 
 /* ---------------------------------------------------------------- cards & buttons */
@@ -123,6 +128,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  box-shadow: 0 10px 28px rgba(99, 102, 241, 0.10);
 }
 
 .card-head h1 { margin: 0 0 6px; font-size: 21px; letter-spacing: -0.02em; }
@@ -141,10 +147,10 @@ body {
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .btn-primary {
-  background: var(--accent); border-color: var(--accent); color: var(--text);
+  background: var(--accent-gradient); border-color: transparent; color: #ffffff;
 }
 .btn-primary:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: transparent;
   box-shadow: 0 0 22px var(--accent-glow);
 }
 
@@ -166,6 +172,7 @@ body {
   padding: 26px 16px;
   text-align: center;
   cursor: pointer;
+  background: rgba(255, 255, 255, 0.55);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 .dropzone:hover, .dropzone:focus-visible, .dropzone.dragging {
@@ -206,7 +213,7 @@ body {
 
 textarea, select, input[type="text"] {
   width: 100%;
-  background: var(--bg);
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text);
@@ -262,7 +269,7 @@ textarea:focus, select:focus, input[type="text"]:focus { border-color: var(--acc
 .tab:hover { color: var(--text); }
 .tab.active {
   color: var(--text);
-  background: var(--bg);
+  background: var(--surface-2);
   border-color: var(--border);
   box-shadow: inset 0 2px 0 var(--accent);
 }
@@ -271,7 +278,7 @@ textarea:focus, select:focus, input[type="text"]:focus { border-color: var(--acc
   flex: 1; min-height: 0; overflow-y: auto;
   padding: 18px;
   display: none;
-  background: var(--bg);
+  background: var(--surface-2);
 }
 .tab-panel.active { display: block; }
 

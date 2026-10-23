@@ -15,11 +15,11 @@ def run():
     for asset in ("/styles.css", "/app.js"):
         r = c.get(asset)
         assert r.status_code == 200 and len(r.data) > 1000, asset
-    # strict palette guard: the stylesheet must stay zinc + indigo only
+    # bright palette guard: the stylesheet must stay on the bright scheme
     css = c.get("/styles.css").data.decode()
-    for token in ("#09090b", "#18181b", "#27272a", "#6366f1", "#fafafa", "#a1a1aa"):
+    for token in ("#eef1ff", "#ffffff", "#f6f8ff", "#d8defc", "#7c3aed", "#0f172a", "#64748b"):
         assert token in css, token
-    print("static assets served; strict 4-color palette tokens present")
+    print("static assets served; bright palette tokens present")
 
     # Source files must NOT be reachable through the static route
     assert c.get("/app.py").status_code == 404
