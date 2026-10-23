@@ -9,10 +9,8 @@ Architecture:
 * ``public/``          -- static, responsive web UI served by Vercel's CDN
 * ``app.py``           -- thin HTTP routing layer (this file)
 * ``web_service.py``   -- JSON validation and orchestration for serverless use
-* ``gemma_client.py``  -- open-weight Gemma extraction / translation
-* ``voice.py``         -- optional ElevenLabs voice layer
+* ``gemma_client.py``  -- open-weight Gemma extraction + Live Sandbox answers
 * ``skill_builder.py`` -- deterministic Agent Skill builder and validator
-* ``streamlit_app.py`` -- optional legacy local Streamlit interface
 
 No user state is kept in this process. The browser owns the editing session;
 every API call is a complete, stateless request, as Vercel Functions require.
@@ -26,8 +24,8 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from web_service import (PayloadError, bootstrap_payload, build_payload,
-                         clone_payload, extract_payload, narrate_payload,
-                         repair_payload, speak_payload, validate_payload)
+                         extract_payload, repair_payload, sandbox_payload,
+                         validate_payload)
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
@@ -112,19 +110,9 @@ def repair():
     return _json_service(repair_payload)
 
 
-@app.post("/api/narrate")
-def narrate():
-    return _json_service(narrate_payload)
-
-
-@app.post("/api/speak")
-def speak():
-    return _json_service(speak_payload)
-
-
-@app.post("/api/clone")
-def clone():
-    return _json_service(clone_payload)
+@app.post("/api/sandbox")
+def sandbox():
+    return _json_service(sandbox_payload)
 
 
 @app.errorhandler(404)

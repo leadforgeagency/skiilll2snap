@@ -9,12 +9,17 @@ def run():
     c = app.test_client()
     r = c.get("/")
     assert r.status_code == 200 and b"Snap2Skill" in r.data and b'id="studio"' in r.data
-    print("GET / serves the web UI")
+    assert b"Flowchart" in r.data and b"Live Sandbox" in r.data
+    print("GET / serves the single-screen studio UI")
 
     for asset in ("/styles.css", "/app.js"):
         r = c.get(asset)
         assert r.status_code == 200 and len(r.data) > 1000, asset
-    print("static assets served from public/")
+    # strict palette guard: the stylesheet must stay zinc + indigo only
+    css = c.get("/styles.css").data.decode()
+    for token in ("#09090b", "#18181b", "#27272a", "#6366f1", "#fafafa", "#a1a1aa"):
+        assert token in css, token
+    print("static assets served; strict 4-color palette tokens present")
 
     # Source files must NOT be reachable through the static route
     assert c.get("/app.py").status_code == 404
@@ -23,7 +28,8 @@ def run():
 
     r = c.get("/api/bootstrap")
     assert r.status_code == 200 and r.json["status"] == "ready" and len(r.json["samples"]) == 2
-    print("GET /api/bootstrap OK")
+    assert "elevenlabs" not in r.json
+    print("GET /api/bootstrap OK (no voice layer)")
 
     sample = list(r.json["samples"])[0]
     r = c.post("/api/extract", json={"sample_name": sample})
@@ -42,11 +48,14 @@ def run():
     assert r.status_code == 200 and r.json["validation"]["passed"] is True
     print("POST /api/validate + /api/repair OK")
 
-    r = c.post("/api/narrate", json={"extraction": extraction, "language": "English"})
-    assert r.status_code == 200 and r.json["mode"] == "voice-off" and "Step 1" in r.json["script"]
-    r = c.post("/api/clone", json={"name": "X", "consent": False, "samples": []})
-    assert r.status_code == 400
-    print("narration fails soft; clone consent enforced over HTTP")
+    r = c.post("/api/sandbox", json={"extraction": extraction, "question": "Do the thing"})
+    assert r.status_code == 200 and r.json["mode"] == "demo" and len(r.json["answer"]) > 50
+    print("POST /api/sandbox OK — deterministic walkthrough in demo mode")
+
+    # Removed voice endpoints must be gone (404, or 405 from the method guard)
+    for gone in ("/api/narrate", "/api/speak", "/api/clone"):
+        assert c.post(gone, json={}).status_code in (404, 405), gone
+    print("voice endpoints removed")
 
     r = c.post("/api/extract", data="not json", content_type="application/json")
     assert r.status_code == 400 and "error" in r.json

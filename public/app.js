@@ -1,57 +1,35 @@
 'use strict';
 
-/* Snap2Skill browser application.
-   The browser owns all editable session state. Every backend operation is a
-   complete stateless HTTP request, which is the correct shape for Vercel. */
-
-const $ = (id) => document.getElementById(id);
+/* Snap2Skill studio — single-screen client.
+   The browser owns all session state; every backend call is one stateless
+   JSON request (Vercel Functions). State machine: idle → uploading →
+   compiling → success. */
 
 const state = {
   bootstrap: null,
   samples: {},
-  images: [],
-  voiceNote: null,
+  images: [],        // [{name, mime_type, data_base64, previewUrl, size}]
   extraction: null,
-  transcript: '',
-  built: null,
-  narrationAudio: '',
-  narrationScript: '',
-  walkIndex: 0,
-  repaired: '',
-  recorder: null,
-  recorderStream: null,
-  recorderChunks: [],
-  recording: false,
-  buildTimer: null,
-  buildSequence: 0,
+  built: null,       // {folder, skill_md, validation, zip_base64, ...}
+  phase: 'idle',
+  chatBusy: false,
 };
 
-const languageCodes = {
-  English: 'en-US', Urdu: 'ur-PK', Hindi: 'hi-IN', Arabic: 'ar-SA',
-  Spanish: 'es-ES', French: 'fr-FR', German: 'de-DE',
-};
+const $ = (id) => document.getElementById(id);
 
+let toastTimer = null;
 function toast(message) {
   const el = $('toast');
   el.textContent = message;
   el.classList.add('show');
-  window.clearTimeout(toast._timer);
-  toast._timer = window.setTimeout(() => el.classList.remove('show'), 3400);
-}
-
-function setOperation(el, message, kind = '') {
-  el.textContent = message || '';
-  el.classList.toggle('is-error', kind === 'error');
-  el.classList.toggle('is-success', kind === 'success');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
 }
 
 function escapeHtml(value) {
   return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
 async function api(path, options = {}) {
@@ -59,26 +37,31 @@ async function api(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   });
-  let data = null;
-  try { data = await response.json(); } catch (_) { /* handled below */ }
-  if (!response.ok) {
-    throw new Error((data && data.error) || `Request failed with HTTP ${response.status}`);
-  }
-  if (!data) throw new Error('The service returned an empty response.');
+  const text = await response.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
   return data;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Could not read that file in the browser.'));
-    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
 }
 
 function base64ToBytes(base64) {
-  const binary = atob(base64 || '');
+  const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
@@ -86,54 +69,50 @@ function base64ToBytes(base64) {
 
 function downloadBytes(bytes, filename, type) {
   const url = URL.createObjectURL(new Blob([bytes], { type }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-function downloadText(text, filename, type = 'text/markdown') {
-  downloadBytes(new TextEncoder().encode(text), filename, type);
+function downloadText(text, filename) {
+  downloadBytes(new TextEncoder().encode(text), filename, 'text/markdown;charset=utf-8');
 }
 
-function slugify(value) {
-  const slug = String(value || 'my-skill').toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return slug || 'my-skill';
+/* ------------------------------------------------------------------ state machine */
+
+const PHASE_ORDER = ['idle', 'uploading', 'compiling', 'success'];
+function setPhase(phase, statusText, isError = false) {
+  state.phase = phase;
+  const status = $('compileStatus');
+  status.textContent = statusText;
+  status.classList.toggle('error', isError);
+  $('compileBtn').disabled = phase === 'uploading' || phase === 'compiling';
+  $('compileBtn').classList.toggle('busy', phase === 'compiling');
+  $('compileBtn').textContent = phase === 'compiling' ? 'Compiling…' : 'Compile to Skill';
+  $('sampleBtn').disabled = phase === 'uploading' || phase === 'compiling';
+  const activeIndex = PHASE_ORDER.indexOf(phase);
+  document.querySelectorAll('#stateSteps li').forEach((li) => {
+    const idx = PHASE_ORDER.indexOf(li.dataset.state);
+    li.classList.toggle('active', li.dataset.state === phase);
+    li.classList.toggle('done', idx < activeIndex);
+  });
 }
 
-function linesToArray(value) {
-  return String(value || '').split('\n').map((line) => line.trim().replace(/^[-•\d.)\s]+/, '').trim()).filter(Boolean);
-}
-
-function arrayToLines(value) {
-  return Array.isArray(value) ? value.join('\n') : String(value || '');
-}
-
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
+/* ------------------------------------------------------------------ tabs */
 
 function activateTab(panelId) {
-  document.querySelectorAll('[data-tab-target]').forEach((button) => {
-    const active = button.dataset.tabTarget === panelId;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+    const active = tab.dataset.tabTarget === panelId;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
   });
   document.querySelectorAll('.tab-panel').forEach((panel) => {
-    panel.classList.toggle('is-active', panel.id === panelId);
+    panel.classList.toggle('active', panel.id === panelId);
   });
-  if (panelId === 'walkthroughPanel') updateWalkthrough();
 }
-
-document.querySelectorAll('[data-tab-target]').forEach((button) => {
-  button.addEventListener('click', () => activateTab(button.dataset.tabTarget));
+document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+  tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget));
 });
 
 /* ------------------------------------------------------------------ bootstrap */
@@ -143,43 +122,27 @@ async function loadBootstrap() {
     const data = await api('/api/bootstrap');
     state.bootstrap = data;
     state.samples = data.samples || {};
-
-    const sampleSelect = $('sampleSelect');
+    const badge = $('gemmaBadge');
+    if (data.gemma.mode === 'live') {
+      badge.innerHTML = '<span class="badge-dot"></span>⚡ Gemma 4 Active';
+    } else {
+      badge.innerHTML = '<span class="badge-dot"></span>⚡ Gemma 4 · Demo Mode';
+    }
+    const select = $('sampleSelect');
+    select.innerHTML = '';
     Object.keys(state.samples).forEach((name) => {
       const option = document.createElement('option');
-      option.value = name;
-      option.textContent = name;
-      sampleSelect.appendChild(option);
+      option.value = name; option.textContent = name;
+      select.appendChild(option);
     });
-
-    $('apiStatus').textContent = 'API ready · Vercel architecture';
-    $('apiStatus').classList.add('is-ready');
-
-    const gemmaReady = Boolean(data.gemma && data.gemma.configured);
-    $('gemmaDot').className = `dot ${gemmaReady ? 'dot-green' : 'dot-amber'}`;
-    $('gemmaStatus').textContent = gemmaReady
-      ? `${data.gemma.model} configured`
-      : 'Demo mode — add GOOGLE_API_KEY in Vercel to enable live vision';
-
-    const voiceReady = Boolean(data.elevenlabs && data.elevenlabs.configured);
-    $('voiceDot').className = `dot ${voiceReady ? 'dot-green' : 'dot-muted'}`;
-    $('voiceStatus').textContent = voiceReady
-      ? 'Scribe, narration and cloning configured'
-      : 'Optional — add ELEVENLABS_API_KEY in Vercel';
   } catch (error) {
-    $('apiStatus').textContent = 'API unavailable';
-    $('apiStatus').classList.add('is-error');
-    $('gemmaStatus').textContent = 'The API could not be reached from this page.';
-    $('voiceStatus').textContent = 'The API could not be reached from this page.';
     console.error(error);
+    $('gemmaBadge').innerHTML = '<span class="badge-dot"></span>API unavailable';
+    setPhase('idle', 'The API is unreachable right now. Check the Vercel deployment.', true);
   }
 }
 
 /* ------------------------------------------------------------------ images */
-
-function canvasBlob(canvas, type, quality) {
-  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
-}
 
 async function prepareImage(file) {
   const bitmap = await createImageBitmap(file);
@@ -188,671 +151,259 @@ async function prepareImage(file) {
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d', { alpha: false });
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, width, height);
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close();
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
 
-  const preservePng = file.type === 'image/png' && file.size <= 1_100_000 && scale === 1;
-  let blob = await canvasBlob(canvas, preservePng ? 'image/png' : 'image/jpeg', 0.88);
-  if (!blob) blob = file;
-  if (blob.size > 1_250_000 && blob.type !== 'image/jpeg') {
-    blob = await canvasBlob(canvas, 'image/jpeg', 0.82) || blob;
+  const keepPng = file.type === 'image/png' && scale === 1 && file.size <= 1_100_000;
+  let blob = await new Promise((resolve) => canvas.toBlob(resolve, keepPng ? 'image/png' : 'image/jpeg', 0.88));
+  if (!keepPng && blob && blob.size > 1_250_000) {
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72));
   }
-  if (blob.size > 1_250_000) {
-    blob = await canvasBlob(canvas, 'image/jpeg', 0.72) || blob;
-  }
+  if (!blob) throw new Error(`Could not process ${file.name}.`);
   return {
-    name: file.name,
-    mime_type: blob.type || file.type || 'image/jpeg',
+    name: file.name.replace(/\.[^.]+$/, '') + (blob.type === 'image/png' ? '.png' : '.jpg'),
+    mime_type: blob.type,
     data_base64: await blobToBase64(blob),
     previewUrl: URL.createObjectURL(blob),
     size: blob.size,
-    originalSize: file.size,
-    width,
-    height,
   };
 }
 
 function renderImages() {
   const grid = $('imagePreviewGrid');
-  grid.innerHTML = state.images.map((image, index) => `
-    <figure class="image-thumb">
-      <img src="${image.previewUrl}" alt="Snap ${index + 1}: ${escapeHtml(image.name)}">
-      <button type="button" data-remove-image="${index}" aria-label="Remove snap ${index + 1}">×</button>
-      <small>${index + 1}. ${escapeHtml(image.name)}</small>
-    </figure>`).join('');
-  grid.querySelectorAll('[data-remove-image]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const index = Number(button.dataset.removeImage);
-      const [removed] = state.images.splice(index, 1);
-      if (removed) URL.revokeObjectURL(removed.previewUrl);
+  grid.innerHTML = '';
+  state.images.forEach((image, index) => {
+    const cell = document.createElement('div');
+    cell.className = 'thumb';
+    cell.innerHTML = `<img alt="Snap ${index + 1}" src="${image.previewUrl}"><button type="button" aria-label="Remove snap ${index + 1}">×</button>`;
+    cell.querySelector('button').addEventListener('click', () => {
+      URL.revokeObjectURL(image.previewUrl);
+      state.images.splice(index, 1);
       renderImages();
     });
+    grid.appendChild(cell);
   });
   const total = state.images.reduce((sum, image) => sum + image.size, 0);
   $('imageMeta').textContent = state.images.length
-    ? `${state.images.length} snap${state.images.length === 1 ? '' : 's'} ready · ${formatBytes(total)} after browser optimisation.`
-    : 'No snaps selected.';
+    ? `${state.images.length} snap${state.images.length === 1 ? '' : 's'} ready · ${formatBytes(total)} after optimization.`
+    : 'No snaps yet — or load the sample sketch below.';
+  if (state.phase === 'success') setPhase('idle', 'Inputs changed — compile again to rebuild the skill.');
 }
 
 async function addImages(fileList) {
   const files = [...(fileList || [])].filter((file) => file.type.startsWith('image/'));
   if (!files.length) return;
-  const remaining = 5 - state.images.length;
-  if (remaining <= 0) {
-    toast('Snap2Skill merges at most five snaps.');
-    return;
+  if (state.images.length + files.length > 5) {
+    toast('Snap2Skill takes at most 5 snaps at once.');
+    files.splice(0, Math.max(0, 5 - state.images.length));
   }
-  $('imageMeta').textContent = 'Optimising snaps in your browser…';
-  for (const file of files.slice(0, remaining)) {
-    try {
-      state.images.push(await prepareImage(file));
-    } catch (error) {
-      console.error(error);
-      toast(`Could not read ${file.name}. Try a JPG or PNG screenshot.`);
-    }
+  setPhase('uploading', `Optimizing ${files.length} snap${files.length === 1 ? '' : 's'} in your browser…`);
+  try {
+    for (const file of files) state.images.push(await prepareImage(file));
+    renderImages();
+    setPhase('idle', 'Snaps ready. Hit Compile to Skill.');
+  } catch (error) {
+    console.error(error);
+    setPhase('idle', error.message, true);
   }
-  renderImages();
 }
 
-$('imageInput').addEventListener('change', async (event) => {
-  await addImages(event.target.files);
-  event.target.value = '';
-});
-
 const dropZone = $('imageDropZone');
+dropZone.addEventListener('click', () => $('imageInput').click());
+dropZone.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); $('imageInput').click(); }
+});
+$('imageInput').addEventListener('change', (event) => { addImages(event.target.files); event.target.value = ''; });
 ['dragenter', 'dragover'].forEach((name) => dropZone.addEventListener(name, (event) => {
-  event.preventDefault();
-  dropZone.classList.add('is-dragging');
+  event.preventDefault(); dropZone.classList.add('dragging');
 }));
 ['dragleave', 'drop'].forEach((name) => dropZone.addEventListener(name, (event) => {
-  event.preventDefault();
-  dropZone.classList.remove('is-dragging');
+  event.preventDefault(); dropZone.classList.remove('dragging');
 }));
 dropZone.addEventListener('drop', (event) => addImages(event.dataTransfer.files));
 
-/* ------------------------------------------------------------------ voice note */
+/* ------------------------------------------------------------------ compile */
 
-async function filePayload(blob, fallbackName) {
-  return {
-    name: fallbackName || 'recording.webm',
-    mime_type: blob.type || 'application/octet-stream',
-    data_base64: await blobToBase64(blob),
-  };
-}
-
-function setVoiceNote(blob, name) {
-  if (blob.size > 3_500_000) {
-    setOperation($('extractStatus'), 'That voice note is over 3.5 MB. Record a shorter note or choose a smaller file for Vercel.', 'error');
-    return;
-  }
-  if (state.voiceNote && state.voiceNote.previewUrl) URL.revokeObjectURL(state.voiceNote.previewUrl);
-  const previewUrl = URL.createObjectURL(blob);
-  state.voiceNote = { blob, name: name || 'voice-note', previewUrl };
-  $('voiceNoteMeta').textContent = `${name || 'Voice note'} · ${formatBytes(blob.size)}`;
-  const preview = $('voiceNotePreview');
-  preview.src = previewUrl;
-  preview.classList.remove('hidden');
-}
-
-$('voiceNoteInput').addEventListener('change', (event) => {
-  const file = event.target.files[0];
-  if (file) setVoiceNote(file, file.name);
-  event.target.value = '';
-});
-
-$('clearVoiceNoteBtn').addEventListener('click', () => {
-  if (state.voiceNote && state.voiceNote.previewUrl) URL.revokeObjectURL(state.voiceNote.previewUrl);
-  state.voiceNote = null;
-  $('voiceNoteMeta').textContent = 'No voice note selected.';
-  $('voiceNotePreview').removeAttribute('src');
-  $('voiceNotePreview').classList.add('hidden');
-});
-
-$('recordBtn').addEventListener('click', async () => {
-  if (state.recording && state.recorder) {
-    state.recorder.stop();
-    return;
-  }
-  if (!navigator.mediaDevices || !window.MediaRecorder) {
-    setOperation($('extractStatus'), 'Browser recording is not available here. Upload an audio file instead.', 'error');
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    state.recorderStream = stream;
-    state.recorderChunks = [];
-    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
-      .find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
-    state.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    state.recorder.addEventListener('dataavailable', (event) => {
-      if (event.data.size) state.recorderChunks.push(event.data);
-    });
-    state.recorder.addEventListener('stop', () => {
-      const type = state.recorder.mimeType || 'audio/webm';
-      const blob = new Blob(state.recorderChunks, { type });
-      setVoiceNote(blob, `expert-recording.${type.includes('mp4') ? 'm4a' : 'webm'}`);
-      state.recorderStream.getTracks().forEach((track) => track.stop());
-      state.recording = false;
-      $('recordBtn').textContent = 'Record in browser';
-      $('recordBtn').classList.remove('is-recording');
-    });
-    state.recorder.start();
-    state.recording = true;
-    $('recordBtn').textContent = 'Stop recording';
-    $('recordBtn').classList.add('is-recording');
-    setOperation($('extractStatus'), 'Recording… speak clearly, then press Stop recording.');
-  } catch (error) {
-    console.error(error);
-    setOperation($('extractStatus'), 'Microphone access was not granted. Upload a voice note instead.', 'error');
-  }
-});
-
-/* ------------------------------------------------------------------ extraction + editor */
-
-function setExtraction(extraction, transcript = '') {
-  state.extraction = structuredClone(extraction || {});
-  state.transcript = transcript || '';
-  state.narrationAudio = '';
-  state.narrationScript = '';
-  state.walkIndex = 0;
-  $('narrationAudio').removeAttribute('src');
-  $('narrationAudio').classList.add('hidden');
-  $('narrationScript').textContent = 'No narration generated yet.';
-
-  $('skillTitle').value = state.extraction.title || '';
-  $('skillSlug').value = state.extraction.skill_name || slugify(state.extraction.title);
-  $('skillDescription').value = state.extraction.description || '';
-  $('whenToUse').value = arrayToLines(state.extraction.when_to_use);
-  $('prerequisites').value = arrayToLines(state.extraction.prerequisites);
-  $('skillInputs').value = arrayToLines(state.extraction.inputs);
-  $('skillTools').value = arrayToLines(state.extraction.tools);
-  $('skillSteps').value = arrayToLines(state.extraction.steps);
-  $('skillConstraints').value = arrayToLines(state.extraction.constraints);
-  $('skillEvidence').value = state.extraction.evidence || '';
-
-  const mode = state.extraction._mode || 'draft';
-  const model = state.extraction._model || 'Snap2Skill';
-  $('extractionMeta').textContent = `Extraction mode: ${mode} · Model/source: ${model}`;
-
-  const unclear = state.extraction.unclear_items || [];
-  $('unclearAlerts').innerHTML = unclear.map((item) => `
-    <div class="alert-item"><strong>Unclear in the source — not invented:</strong> ${escapeHtml(item)}</div>`).join('');
-
-  $('emptyOutput').classList.add('hidden');
-  $('editorWrap').classList.remove('hidden');
-  updateWalkthrough();
-  performBuild();
-}
-
-function readEditor() {
-  if (!state.extraction) return null;
-  const extraction = structuredClone(state.extraction);
-  extraction.title = $('skillTitle').value.trim();
-  extraction.skill_name = slugify($('skillSlug').value || extraction.title);
-  $('skillSlug').value = extraction.skill_name;
-  extraction.description = $('skillDescription').value.trim();
-  extraction.when_to_use = linesToArray($('whenToUse').value);
-  extraction.prerequisites = linesToArray($('prerequisites').value);
-  extraction.inputs = linesToArray($('skillInputs').value);
-  extraction.tools = linesToArray($('skillTools').value);
-  extraction.steps = linesToArray($('skillSteps').value);
-  extraction.constraints = linesToArray($('skillConstraints').value);
-  extraction.evidence = $('skillEvidence').value.trim();
-  state.extraction = extraction;
-  return extraction;
-}
-
-['skillTitle', 'skillDescription', 'whenToUse', 'prerequisites', 'skillInputs',
- 'skillTools', 'skillSteps', 'skillConstraints', 'skillEvidence'].forEach((id) => {
-  $(id).addEventListener('input', () => {
-    if (id === 'skillTitle') $('skillSlug').value = slugify($('skillTitle').value);
-    readEditor();
-    scheduleBuild();
-    updateWalkthrough(false);
-  });
-});
-
-async function runExtraction(sampleName = '') {
-  const button = $('extractBtn');
+async function runCompile(sampleName = '') {
+  const payload = { images: state.images.map(({ name, mime_type, data_base64 }) => ({ name, mime_type, data_base64 })) };
   const text = $('sourceText').value.trim();
   const notes = $('extraNotes').value.trim();
-  const selectedSample = sampleName || $('sampleSelect').value;
-  const hasCustom = Boolean(state.images.length || state.voiceNote || text || notes);
+  if (text) payload.text = text;
+  if (notes) payload.notes = notes;
+  if (sampleName) payload.sample_name = sampleName;
 
-  button.disabled = true;
-  setOperation($('extractStatus'), selectedSample && !hasCustom
-    ? 'Loading the labelled sample through the API…'
-    : 'Reading the source and preparing a structured draft…');
-  try {
-    const payload = {
-      text,
-      notes,
-      sample_name: hasCustom ? '' : selectedSample,
-      images: state.images.map(({ name, mime_type, data_base64 }) => ({ name, mime_type, data_base64 })),
-      audio: state.voiceNote ? await filePayload(state.voiceNote.blob, state.voiceNote.name) : null,
-    };
-    const data = await api('/api/extract', { method: 'POST', body: JSON.stringify(payload) });
-    setExtraction(data.extraction, data.transcript || '');
-    const transcriptNote = data.transcript
-      ? ` Voice transcript received (${data.transcript_language || 'language auto-detected'}).`
-      : (state.voiceNote && data.transcript_mode === 'voice-off'
-        ? ' Voice note was noted, but ElevenLabs is not configured for transcription.'
-        : '');
-    setOperation($('extractStatus'), `Draft ready. Review every step before export.${transcriptNote}`, 'success');
-    toast('Skill draft ready — review it before export.');
-  } catch (error) {
-    console.error(error);
-    setOperation($('extractStatus'), error.message, 'error');
-  } finally {
-    button.disabled = false;
+  if (!sampleName && !payload.images.length && !text && !notes) {
+    setPhase('idle', 'Add a snap, paste steps, or load the sample sketch first.', true);
+    toast('Nothing to compile yet.');
+    return;
   }
-}
 
-$('createForm').addEventListener('submit', (event) => {
-  event.preventDefault();
-  runExtraction();
-});
-
-$('heroSampleBtn').addEventListener('click', async () => {
-  document.querySelector('#studio').scrollIntoView({ behavior: 'smooth' });
-  activateTab('createPanel');
-  const coffeeName = Object.keys(state.samples).find((name) => name.toLowerCase().includes('pour-over'));
-  if (coffeeName) {
-    $('sampleSelect').value = coffeeName;
-    await runExtraction(coffeeName);
-  } else {
-    toast('Samples are still loading. Try again in a moment.');
-  }
-});
-
-$('resetCreateBtn').addEventListener('click', () => {
-  state.images.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-  state.images = [];
-  renderImages();
-  $('clearVoiceNoteBtn').click();
-  $('sampleSelect').value = '';
-  $('sourceText').value = '';
-  $('extraNotes').value = '';
-  state.extraction = null;
-  state.built = null;
-  state.transcript = '';
-  $('editorWrap').classList.add('hidden');
-  $('emptyOutput').classList.remove('hidden');
-  setOperation($('extractStatus'), 'Create form reset.');
-  updateWalkthrough();
-});
-
-/* ------------------------------------------------------------------ build + validation */
-
-function validationTable(validation) {
-  if (!validation) return '';
-  return `<table class="check-table"><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>
-    ${validation.checks.map((check) => `<tr>
-      <td>${escapeHtml(check.name)}</td>
-      <td class="${check.passed ? 'pass' : 'fail'}">${check.passed ? 'Pass' : 'Fail'}</td>
-      <td>${escapeHtml(check.detail || '')}</td>
-    </tr>`).join('')}
-  </tbody></table>`;
-}
-
-function renderValidation(validation, folder = '') {
-  $('validationSummary').innerHTML = `
-    <span class="validation-chip">${validation.passed ? 'Valid Agent Skill' : 'Needs attention'}</span>
-    <span class="validation-chip">${validation.score}/${validation.total} checks passed</span>
-    ${folder ? `<span class="validation-chip">Folder: ${escapeHtml(folder)}/</span>` : ''}`;
-  $('validationChecks').innerHTML = validationTable(validation);
-}
-
-function scheduleBuild() {
-  if (!state.extraction) return;
-  window.clearTimeout(state.buildTimer);
-  $('buildStatus').textContent = 'Editing… validation will refresh automatically.';
-  $('buildStatus').className = 'build-status';
-  state.buildTimer = window.setTimeout(performBuild, 650);
-}
-
-async function performBuild() {
-  const extraction = readEditor();
-  if (!extraction) return;
-  const sequence = ++state.buildSequence;
-  $('buildStatus').textContent = 'Validating and packaging with the deterministic builder…';
-  $('buildStatus').className = 'build-status';
+  setPhase('compiling', sampleName
+    ? 'Compiling the sample sketch — Gemma structure → deterministic builder → 13-point validator…'
+    : 'Compiling — Gemma is reading the snap, then deterministic code builds and validates the skill…');
   try {
-    const data = await api('/api/build', {
+    const extracted = await api('/api/extract', { method: 'POST', body: JSON.stringify(payload) });
+    state.extraction = extracted.extraction;
+    const built = await api('/api/build', {
       method: 'POST',
-      body: JSON.stringify({
-        extraction,
-        audio_base64: state.narrationAudio,
-        transcript: state.transcript,
-        narration_script: state.narrationScript,
-      }),
+      body: JSON.stringify({ extraction: state.extraction }),
     });
-    if (sequence !== state.buildSequence) return;
-    state.built = data;
-    renderValidation(data.validation, data.folder);
-    $('skillPreview').textContent = data.skill_md;
-    $('downloadZipBtn').disabled = !data.zip_included;
-    $('downloadMdBtn').disabled = false;
-    $('copyMdBtn').disabled = false;
-    $('buildStatus').textContent = data.validation.passed
-      ? `Valid — ${data.validation.score}/${data.validation.total} checks passed. Zip size: ${formatBytes(data.zip_size_bytes)}.`
-      : `${data.validation.score}/${data.validation.total} checks passed. Fix the failed checks before shipping.`;
-    $('buildStatus').classList.add(data.validation.passed ? 'is-valid' : 'is-invalid');
-    if (data.zip_warning) setOperation($('narrationStatus'), data.zip_warning, 'error');
+    state.built = built;
+    renderStudio();
+    const v = built.validation;
+    setPhase('success', `Compiled “${state.extraction.title}” — validator ${v.score}/${v.total} ${v.passed ? 'passed' : 'needs review'}. Test it in the Live Sandbox.`);
+    toast('Skill compiled and validated.');
+    activateTab('flowPanel');
   } catch (error) {
-    if (sequence !== state.buildSequence) return;
     console.error(error);
-    $('buildStatus').textContent = `Build failed: ${error.message}`;
-    $('buildStatus').classList.add('is-invalid');
+    setPhase('idle', error.message, true);
   }
 }
 
+$('compileBtn').addEventListener('click', () => runCompile());
+$('sampleBtn').addEventListener('click', () => {
+  const name = $('sampleSelect').value;
+  if (!name) { toast('No sample available.'); return; }
+  runCompile(name);
+});
+
+/* ------------------------------------------------------------------ studio rendering */
+
+function chip(text, accent = false) {
+  return `<span class="chip${accent ? ' accent' : ''}">${escapeHtml(text)}</span>`;
+}
+
+function listHtml(items, fallback) {
+  const list = (items || []).filter(Boolean);
+  return list.length ? list.map((item) => `<li>${escapeHtml(item)}</li>`).join('') : `<li>${escapeHtml(fallback)}</li>`;
+}
+
+function renderStudio() {
+  const x = state.extraction;
+  const built = state.built;
+  if (!x || !built) return;
+
+  /* Flowchart tab */
+  $('flowEmpty').classList.add('hidden');
+  $('flowContent').classList.remove('hidden');
+  $('flowTitle').textContent = x.title || 'Untitled skill';
+  $('flowEvidence').textContent = x.evidence || '';
+  $('flowChips').innerHTML = [
+    chip(`folder: ${built.folder}`, true),
+    chip(`source: ${x._mode || 'gemma'}`),
+    chip(`model: ${x._model || 'gemma'}`),
+    chip(`validator: ${built.validation.score}/${built.validation.total}`, built.validation.passed),
+  ].join('');
+
+  const unclear = x.unclear_items || [];
+  $('unclearBox').classList.toggle('hidden', !unclear.length);
+  $('unclearList').innerHTML = unclear.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+
+  const nodes = [];
+  const trigger = (x.when_to_use || [])[0] || 'When this task comes up';
+  nodes.push(`<div class="flow-node start"><div class="node-text">▶ ${escapeHtml(x.title || 'Skill')}<small>${escapeHtml(trigger)}</small></div></div>`);
+  (x.steps || []).forEach((step, i) => {
+    nodes.push('<div class="flow-arrow" aria-hidden="true">↓</div>');
+    nodes.push(`<div class="flow-node" style="animation-delay:${Math.min(i * 40, 400)}ms"><span class="node-num">${i + 1}</span><div class="node-text">${escapeHtml(step)}</div></div>`);
+  });
+  nodes.push('<div class="flow-arrow" aria-hidden="true">↓</div>');
+  nodes.push(`<div class="flow-node end"><div class="node-text">✓ Validated SKILL.md<small>${escapeHtml(built.folder)}/SKILL.md · ${built.validation.score}/${built.validation.total} checks passed</small></div></div>`);
+  $('flowNodes').innerHTML = nodes.join('');
+
+  $('flowPrereq').innerHTML = listHtml(x.prerequisites, 'None stated in the source.');
+  $('flowInputs').innerHTML = listHtml(x.inputs, 'None stated in the source.');
+  $('flowConstraints').innerHTML = listHtml(x.constraints, 'None stated in the source.');
+  $('flowTools').innerHTML = listHtml(x.tools, 'None visible in the source.');
+
+  /* Spec tab */
+  $('skillPreview').textContent = built.skill_md;
+  const v = built.validation;
+  const specChip = $('specValidation');
+  specChip.textContent = v.passed ? `✓ Valid Agent Skill — ${v.score}/${v.total} checks` : `Validator: ${v.score}/${v.total} checks`;
+  specChip.classList.toggle('accent', v.passed);
+  $('validationChecks').innerHTML = `<table class="checks-table"><tbody>${v.checks.map((check) => `
+    <tr><td class="${check.passed ? 'check-pass' : 'check-fail'}">${check.passed ? '✓' : '✗'}</td>
+    <td>${escapeHtml(check.name)}</td><td class="detail">${escapeHtml(check.detail || '')}</td></tr>`).join('')}</tbody></table>`;
+  $('copyMdBtn').disabled = false;
+  $('downloadMdBtn').disabled = false;
+  $('downloadZipBtn').disabled = !built.zip_included;
+
+  /* Sandbox tab */
+  const quick = $('quickRow');
+  quick.innerHTML = '';
+  const example = (x.examples || [])[0];
+  const prompts = [example && example.input, 'Walk me through this step by step', 'What do you need from me before starting?'].filter(Boolean);
+  [...new Set(prompts)].forEach((prompt) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'quick-chip';
+    button.textContent = prompt;
+    button.addEventListener('click', () => { $('chatInput').value = prompt; $('chatForm').requestSubmit(); });
+    quick.appendChild(button);
+  });
+}
+
+$('copyMdBtn').addEventListener('click', async () => {
+  if (!state.built) return;
+  await navigator.clipboard.writeText(state.built.skill_md);
+  toast('SKILL.md copied to clipboard.');
+});
+$('downloadMdBtn').addEventListener('click', () => {
+  if (state.built) downloadText(state.built.skill_md, 'SKILL.md');
+});
 $('downloadZipBtn').addEventListener('click', () => {
   if (!state.built || !state.built.zip_base64) return;
   downloadBytes(base64ToBytes(state.built.zip_base64), `${state.built.folder}.zip`, 'application/zip');
 });
 
-$('downloadMdBtn').addEventListener('click', () => {
-  if (!state.built) return;
-  downloadText(state.built.skill_md, 'SKILL.md');
-});
+/* ------------------------------------------------------------------ sandbox */
 
-$('copyMdBtn').addEventListener('click', async () => {
-  if (!state.built) return;
-  try {
-    await navigator.clipboard.writeText(state.built.skill_md);
-    toast('SKILL.md copied to the clipboard.');
-  } catch (_) {
-    toast('Clipboard access was blocked by the browser.');
-  }
-});
-
-/* ------------------------------------------------------------------ narration */
-
-function localNarrationScript(extraction) {
-  if (!extraction) return '';
-  const parts = [extraction.title, extraction.description];
-  (extraction.steps || []).forEach((step, index) => parts.push(`Step ${index + 1}: ${step}`));
-  if ((extraction.constraints || []).length) parts.push(`Important warnings: ${extraction.constraints.join(' ')}`);
-  return parts.filter(Boolean).join(' ');
+function appendMessage(role, text) {
+  const log = $('chatLog');
+  const msg = document.createElement('div');
+  msg.className = `chat-msg ${role}`;
+  msg.innerHTML = `<span class="chat-role">${role === 'user' ? 'You' : 'Skill agent'}</span><p>${escapeHtml(text)}</p>`;
+  log.appendChild(msg);
+  log.scrollTop = log.scrollHeight;
+  return msg;
 }
 
-function speakWithDevice(text, language = 'English', onEnd = null) {
-  if (!('speechSynthesis' in window)) {
-    toast('This browser does not provide a device voice.');
-    return false;
-  }
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = languageCodes[language] || 'en-US';
-  utterance.rate = 0.96;
-  if (onEnd) utterance.onend = onEnd;
-  window.speechSynthesis.speak(utterance);
-  return true;
-}
-
-$('narrateBtn').addEventListener('click', async () => {
-  const extraction = readEditor();
-  if (!extraction) return;
-  const language = $('narrationLanguage').value;
-  const wantsExpert = $('narrationVoice').value === 'expert';
-  const voiceId = wantsExpert ? $('expertVoiceId').value.trim() : '';
-  if (wantsExpert && !voiceId) {
-    setOperation($('narrationStatus'), 'Save an expert clone voice ID in the system panel first, or choose the library voice.', 'error');
+$('chatForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const question = $('chatInput').value.trim();
+  if (!question || state.chatBusy) return;
+  if (!state.extraction || !state.built) {
+    appendMessage('agent', 'Compile a skill first — then I will answer strictly by following it.');
     return;
   }
-  const button = $('narrateBtn');
-  button.disabled = true;
-  setOperation($('narrationStatus'), 'Preparing the script and requesting ElevenLabs audio…');
+  appendMessage('user', question);
+  $('chatInput').value = '';
+  state.chatBusy = true;
+  $('chatSendBtn').disabled = true;
+  const typing = appendMessage('agent', 'Following the skill…');
+  $('chatStatus').textContent = 'Sandbox: the agent is working through the compiled SKILL.md…';
   try {
-    const data = await api('/api/narrate', {
+    const data = await api('/api/sandbox', {
       method: 'POST',
-      body: JSON.stringify({ extraction, language, voice_id: voiceId }),
+      body: JSON.stringify({ extraction: state.extraction, skill_md: state.built.skill_md, question }),
     });
-    state.narrationScript = data.script || '';
-    $('narrationScript').textContent = state.narrationScript || 'No script returned.';
-    if (data.audio_base64) {
-      state.narrationAudio = data.audio_base64;
-      const bytes = base64ToBytes(data.audio_base64);
-      const url = URL.createObjectURL(new Blob([bytes], { type: data.audio_mime || 'audio/mpeg' }));
-      const player = $('narrationAudio');
-      player.src = url;
-      player.classList.remove('hidden');
-      setOperation($('narrationStatus'), 'Narration generated. It will be bundled into the skill zip.', 'success');
-      await performBuild();
-    } else {
-      state.narrationAudio = '';
-      setOperation($('narrationStatus'), data.warning || 'Narration audio is unavailable, but the script is ready.', 'error');
-      await performBuild();
-    }
+    typing.querySelector('p').textContent = data.answer;
+    $('chatStatus').textContent = data.mode === 'gemma'
+      ? `Sandbox answered by Gemma (${data.model}) acting as the skill.`
+      : 'Sandbox answered by the deterministic walkthrough (demo mode — add GOOGLE_API_KEY for live Gemma answers).';
   } catch (error) {
     console.error(error);
-    setOperation($('narrationStatus'), error.message, 'error');
+    typing.querySelector('p').textContent = `Sandbox error: ${error.message}`;
+    $('chatStatus').textContent = 'Sandbox request failed.';
   } finally {
-    button.disabled = false;
+    state.chatBusy = false;
+    $('chatSendBtn').disabled = false;
+    $('chatLog').scrollTop = $('chatLog').scrollHeight;
   }
-});
-
-$('deviceReadBtn').addEventListener('click', () => {
-  const extraction = readEditor();
-  if (!extraction) return;
-  const script = state.narrationScript || localNarrationScript(extraction);
-  state.narrationScript = script;
-  $('narrationScript').textContent = script;
-  if (speakWithDevice(script, $('narrationLanguage').value)) {
-    setOperation($('narrationStatus'), 'Reading with the browser device voice. This free fallback is not bundled as an MP3.', 'success');
-  }
-});
-
-/* ------------------------------------------------------------------ walkthrough */
-
-function currentSteps() {
-  const extraction = state.extraction;
-  return extraction && Array.isArray(extraction.steps) ? extraction.steps : [];
-}
-
-function updateWalkthrough(reset = true) {
-  if (reset && state.extraction) readEditor();
-  const steps = currentSteps();
-  const hasSteps = steps.length > 0;
-  $('walkthroughEmpty').classList.toggle('hidden', hasSteps);
-  $('walkthroughContent').classList.toggle('hidden', !hasSteps);
-  if (!hasSteps) return;
-
-  state.walkIndex = Math.max(0, Math.min(state.walkIndex, steps.length - 1));
-  const index = state.walkIndex;
-  $('walkProgressText').textContent = `Step ${index + 1} of ${steps.length}`;
-  $('walkSkillTitle').textContent = state.extraction.title || 'Current skill';
-  $('walkProgressBar').style.width = `${steps.length === 1 ? 100 : (index / (steps.length - 1)) * 100}%`;
-  $('walkStepCard').innerHTML = `<small>Step ${index + 1}</small><div>${escapeHtml(steps[index])}</div>`;
-  $('walkPrevBtn').disabled = index === 0;
-  $('walkNextBtn').disabled = index >= steps.length - 1;
-  if (index === steps.length - 1) {
-    setOperation($('walkStatus'), 'That is the final step.', 'success');
-  }
-}
-
-$('walkPrevBtn').addEventListener('click', () => {
-  state.walkIndex = Math.max(0, state.walkIndex - 1);
-  updateWalkthrough(false);
-});
-$('walkNextBtn').addEventListener('click', () => {
-  state.walkIndex = Math.min(currentSteps().length - 1, state.walkIndex + 1);
-  updateWalkthrough(false);
-});
-
-$('walkSpeakBtn').addEventListener('click', async () => {
-  const steps = currentSteps();
-  if (!steps.length) return;
-  const text = `Step ${state.walkIndex + 1}. ${steps[state.walkIndex]}`;
-  const button = $('walkSpeakBtn');
-  button.disabled = true;
-  setOperation($('walkStatus'), 'Requesting ElevenLabs audio for this step…');
-  try {
-    const data = await api('/api/speak', {
-      method: 'POST',
-      body: JSON.stringify({ text, voice_id: $('expertVoiceId').value.trim() }),
-    });
-    if (data.audio_base64) {
-      const bytes = base64ToBytes(data.audio_base64);
-      const url = URL.createObjectURL(new Blob([bytes], { type: data.audio_mime || 'audio/mpeg' }));
-      const player = $('walkAudio');
-      player.src = url;
-      player.classList.remove('hidden');
-      await player.play();
-      setOperation($('walkStatus'), 'Playing the ElevenLabs step narration.', 'success');
-    } else {
-      setOperation($('walkStatus'), data.warning || 'ElevenLabs audio is unavailable for this step.', 'error');
-    }
-  } catch (error) {
-    console.error(error);
-    setOperation($('walkStatus'), error.message, 'error');
-  } finally {
-    button.disabled = false;
-  }
-});
-
-$('walkDeviceBtn').addEventListener('click', () => {
-  const steps = currentSteps();
-  if (!steps.length) return;
-  const text = `Step ${state.walkIndex + 1}. ${steps[state.walkIndex]}`;
-  const advance = () => {
-    if ($('autoAdvanceWalk').checked && state.walkIndex < steps.length - 1) {
-      state.walkIndex += 1;
-      updateWalkthrough(false);
-    }
-  };
-  if (speakWithDevice(text, 'English', advance)) {
-    setOperation($('walkStatus'), 'Reading this step with the browser device voice.', 'success');
-  }
-});
-
-/* ------------------------------------------------------------------ Fix My Skill */
-
-function renderFixValidation(validation) {
-  $('fixValidation').innerHTML = `
-    <div class="validation-summary">
-      <span class="validation-chip">${validation.passed ? 'Valid Agent Skill' : 'Not compliant yet'}</span>
-      <span class="validation-chip">${validation.score}/${validation.total} checks passed</span>
-    </div>
-    ${validationTable(validation)}`;
-}
-
-$('validateSkillBtn').addEventListener('click', async () => {
-  const markdown = $('brokenSkill').value;
-  setOperation($('fixStatus'), 'Running the thirteen compliance checks…');
-  try {
-    const data = await api('/api/validate', { method: 'POST', body: JSON.stringify({ markdown }) });
-    renderFixValidation(data.validation);
-    setOperation($('fixStatus'), data.validation.passed ? 'This skill already passes.' : 'Issues found. Auto-repair can rebuild the structure while preserving workflow lines.', data.validation.passed ? 'success' : 'error');
-  } catch (error) {
-    setOperation($('fixStatus'), error.message, 'error');
-  }
-});
-
-$('repairSkillBtn').addEventListener('click', async () => {
-  const markdown = $('brokenSkill').value;
-  setOperation($('fixStatus'), 'Repairing through the same deterministic builder used for new skills…');
-  try {
-    const data = await api('/api/repair', { method: 'POST', body: JSON.stringify({ markdown }) });
-    state.repaired = data.skill_md;
-    $('repairedPreview').textContent = data.skill_md;
-    $('repairOutput').classList.remove('hidden');
-    renderFixValidation(data.validation);
-    setOperation($('fixStatus'), `Repair complete — ${data.validation.score}/${data.validation.total} checks now pass.`, 'success');
-  } catch (error) {
-    setOperation($('fixStatus'), error.message, 'error');
-  }
-});
-
-$('downloadRepairedBtn').addEventListener('click', () => {
-  if (state.repaired) downloadText(state.repaired, 'SKILL.md');
-});
-
-/* ------------------------------------------------------------------ voice cloning */
-
-function renderCloneSampleMeta() {
-  const files = [...($('cloneSamples').files || [])];
-  const total = files.reduce((sum, file) => sum + file.size, 0);
-  $('cloneSampleMeta').textContent = files.length
-    ? `${files.length} sample${files.length === 1 ? '' : 's'} selected · ${formatBytes(total)} total. Vercel limit: below 4 MB combined.`
-    : 'No samples selected.';
-}
-$('cloneSamples').addEventListener('change', renderCloneSampleMeta);
-
-$('cloneBtn').addEventListener('click', async () => {
-  const files = [...($('cloneSamples').files || [])];
-  if (!$('cloneConsent').checked) {
-    setOperation($('cloneStatus'), 'Consent is required. No consent, no clone.', 'error');
-    return;
-  }
-  if (!files.length) {
-    setOperation($('cloneStatus'), 'Upload at least one clean voice sample.', 'error');
-    return;
-  }
-  const total = files.reduce((sum, file) => sum + file.size, 0);
-  if (total > 4_000_000) {
-    setOperation($('cloneStatus'), 'Those samples are too large for one Vercel request. Trim them below 4 MB combined.', 'error');
-    return;
-  }
-  const button = $('cloneBtn');
-  button.disabled = true;
-  setOperation($('cloneStatus'), 'Uploading samples securely to the Snap2Skill API and ElevenLabs…');
-  try {
-    const samples = [];
-    for (const file of files) samples.push(await filePayload(file, file.name));
-    const data = await api('/api/clone', {
-      method: 'POST',
-      body: JSON.stringify({ name: $('cloneName').value.trim(), consent: true, samples }),
-    });
-    if (data.voice_id) {
-      $('expertVoiceId').value = data.voice_id;
-      localStorage.setItem('snap2skill.expertVoiceId', data.voice_id);
-      $('narrationVoice').value = 'expert';
-      setOperation($('cloneStatus'), `Clone created and saved in this browser: ${data.voice_id}`, 'success');
-      toast('Expert voice clone created.');
-    } else {
-      setOperation($('cloneStatus'), data.warning || 'Cloning did not complete.', 'error');
-    }
-  } catch (error) {
-    console.error(error);
-    setOperation($('cloneStatus'), error.message, 'error');
-  } finally {
-    button.disabled = false;
-  }
-});
-
-/* ------------------------------------------------------------------ expert voice ID */
-
-function loadExpertVoiceId() {
-  const saved = localStorage.getItem('snap2skill.expertVoiceId') || '';
-  $('expertVoiceId').value = saved;
-}
-$('saveVoiceIdBtn').addEventListener('click', () => {
-  const value = $('expertVoiceId').value.trim();
-  if (value) localStorage.setItem('snap2skill.expertVoiceId', value);
-  else localStorage.removeItem('snap2skill.expertVoiceId');
-  toast(value ? 'Expert voice ID saved in this browser.' : 'Expert voice ID cleared.');
-});
-$('clearVoiceIdBtn').addEventListener('click', () => {
-  $('expertVoiceId').value = '';
-  localStorage.removeItem('snap2skill.expertVoiceId');
-  if ($('narrationVoice')) $('narrationVoice').value = '';
-  toast('Expert voice ID removed from this browser.');
-});
-$('expertVoiceId').addEventListener('input', () => {
-  const value = $('expertVoiceId').value.trim();
-  if (value) localStorage.setItem('snap2skill.expertVoiceId', value);
 });
 
 /* ------------------------------------------------------------------ init */
 
-loadExpertVoiceId();
 renderImages();
-renderCloneSampleMeta();
 loadBootstrap();

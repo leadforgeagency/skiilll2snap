@@ -6,7 +6,7 @@ The world's expertise is trapped where AI agents can't use it: on whiteboards, i
 
 **Snap2Skill fixes that in 30 seconds:** take a snap → open-weight **Gemma Vision** reads it and extracts the procedure → deterministic code builds a `SKILL.md` that **provably complies** with the Agent Skills open standard, validates it check-by-check, and hands you a zip you can drop into any project.
 
-**New in v2 — full voice workflow (ElevenLabs):** the expert can *talk* while they snap (ElevenLabs **Scribe** transcribes their voice note in 90+ languages and Gemma uses the transcript), you **edit the steps before export**, the finished skill is **narrated aloud** — optionally in the **expert's own cloned voice** (Creator-plan Professional/Instant Cloning, consent-gated) and in **7 narration languages** (Gemma translates, ElevenLabs speaks) — the MP3 is bundled inside the skill zip, and a **hands-free walkthrough mode** reads the skill back step-by-step for kitchens, workshops, and labs. Plus **Fix-My-Skill**: paste any broken `SKILL.md` and the validator + auto-repair make it compliant. Full design: `ARCHITECTURE.md`.
+**The studio:** a strict single-screen developer UI — input hub on the left (dropzone, sample sketch, glowing **Compile to Skill**), studio on the right with three tabs: **📊 Visual Flowchart** (the detected workflow as connected nodes), **📄 SKILL.md Spec** (the generated file, validator verdict, one-click copy, zip download), and a **🚀 Live Sandbox** where you chat-test the compiled skill — Gemma answers *as* the skill, following only its steps. The API also keeps **Fix-My-Skill** (`/api/validate` + `/api/repair`) for repairing hand-written skills. Full design: `ARCHITECTURE.md`.
 
 Built for the **Hacktoberfest Hack Day — Open-Source AI Prize Challenge (Best Open-Source AI Project)**.
 
@@ -26,19 +26,15 @@ Output structure:
 <skill-name>/
   SKILL.md                    ← validated, Agent Skills open standard
   references/source-notes.md  ← what Gemma actually saw (audit trail)
-  references/voice-transcript.txt ← expert's voice note, if one was used (Scribe)
-  audio/guide.mp3             ← the skill, narrated (ElevenLabs, expert clone if set)
-  audio/narration.txt         ← the exact narration script
 ```
 
-**Just add your keys and deploy** — the production web app is **Vercel-native** (static UI in `public/` + Flask Functions in `app.py`; full guide in `VERCEL_DEPLOYMENT.md`):
+**Just add your key and deploy** — the production web app is **Vercel-native** (static UI in `public/` + Flask Functions in `app.py`; full guide in `VERCEL_DEPLOYMENT.md`):
 
 ```bash
 GOOGLE_API_KEY=...        # Vercel env var — Google AI Studio, used ONLY for open-weight Gemma
-ELEVENLABS_API_KEY=...    # optional Vercel env var — enables the whole voice layer
 ```
 
-The web UI shows a live status panel (key configured / not configured — never the key itself). Every ElevenLabs feature fails soft: no key or an API error disables voice only, never the core pipeline. Without any keys the deployed app still runs in labelled demo mode.
+The header badge shows the live mode honestly (⚡ Gemma 4 Active vs Demo Mode — never the key itself). Without a key the deployed app still runs in labelled demo mode: samples and pasted text compile through the deterministic demo extractor, and the sandbox answers with a step walkthrough.
 
 Drop the folder into `.agents/skills/` (or your agent's skills directory) and any compatible agent — Claude Code, Cursor, Copilot, OpenCode and others that read the open standard — can run that know-how forever.
 
@@ -49,16 +45,15 @@ Drop the folder into `.agents/skills/` (or your agent's skills directory) and an
 | Open-weight AI is core | **Gemma Vision** performs the reading/extraction for every snap; without it there is no product |
 | Model named + terms | **Primary: `gemma-4-26b-a4b-it`** — Gemma 4, 26B params (**large model, >10B**), text + image input, open weights under the **Gemma Terms of Use**: https://ai.google.dev/gemma/terms · Fallbacks in code: `gemma-4-31b-it`, `gemma-3-27b-it`, `gemma-3-12b-it` |
 | Access | Google AI Studio API key via the Gemini API (`GOOGLE_API_KEY`). **No closed Gemini model is ever called** — model IDs in `gemma_client.py` are Gemma only |
-| Voice integration | ElevenLabs is integrated as an **optional voice layer** (Scribe STT in, TTS + voice cloning out) via `ELEVENLABS_API_KEY`. It is never the reasoning/extraction engine — Gemma is — and the app runs fully without it. Voice cloning is consent-gated in the UI |
 | Public repo + licence | This repository, **MIT** (`LICENSE`) |
 | Agent Skill standard | Every generated skill + this project's own skill pass `validate_skill_md()`; format = YAML frontmatter (`name`, `description`, `license`, `metadata`) + markdown body |
 | Substantial work | Vision extraction schema with honesty rules, deterministic SKILL.md builder, 13-point validator, zip packaging, offline demo mode, tests |
 
-**Dependencies (production/Vercel):** Python, Flask, `google-genai` (Apache-2.0), `elevenlabs` SDK, `python-dotenv`, requests. The optional legacy Streamlit UI lives in `streamlit_app.py` with its own `requirements-streamlit.txt`.
+**Dependencies (production/Vercel):** Python, Flask, `google-genai` (Apache-2.0), `python-dotenv`, requests. No other AI provider is involved — Gemma is the only model.
 
 ## Deploy it (Vercel)
 
-Import this repository in Vercel → Framework: **Flask**, root `./` → add `GOOGLE_API_KEY` (and optionally `ELEVENLABS_API_KEY`) → Deploy. Every push to `main` redeploys automatically. Step-by-step, limits, and troubleshooting: **`VERCEL_DEPLOYMENT.md`**.
+Import this repository in Vercel → Framework: **Flask**, root `./` → add `GOOGLE_API_KEY` → Deploy. Every push to `main` redeploys automatically. Step-by-step, limits, and troubleshooting: **`VERCEL_DEPLOYMENT.md`**.
 
 ## Run it locally
 

@@ -112,18 +112,44 @@ def extract_skill(text: str = "", notes: str = "", image_path: str | None = None
     return demo_extract(text)
 
 
-def translate_text(text: str, target_language: str) -> str:
-    """Translate a narration script with Gemma (open-weight core does the
-    translation; ElevenLabs only speaks it). Falls back to the original text."""
-    if not text or not target_language or target_language.lower().startswith("english"):
-        return text
+SANDBOX_PROMPT = """You are an AI agent that has loaded the Agent Skill below. A user is testing you in a sandbox.
+Answer their request by FOLLOWING THE SKILL exactly: walk through its workflow steps in order, respect its
+constraints, and only use knowledge contained in the skill. If the skill does not cover something, say so
+plainly instead of inventing it. Keep the answer practical and structured: start with a one-line plan, then
+the numbered steps you would take for this request, then the expected result.
+
+=== SKILL (SKILL.md) ===
+{skill_md}
+=== END SKILL ===
+
+USER REQUEST: {question}
+"""
+
+
+def answer_as_skill(skill_md: str, question: str, extraction: dict | None = None) -> dict:
+    """Live Sandbox brain: Gemma answers AS the compiled skill.
+    Falls back to a deterministic walkthrough of the skill's own steps when
+    no Gemma key is configured, so the sandbox always works."""
     try:
-        raw, _m = _generate(
-            f"Translate the following text into {target_language}. "
-            f"Return ONLY the translation, keeping step numbers and meaning exact:\n\n{text}")
-        return raw or text
+        raw, model = _generate(SANDBOX_PROMPT.format(skill_md=skill_md[:12_000], question=question[:2_000]))
+        if raw:
+            return {"answer": raw, "mode": "gemma", "model": model}
     except Exception:
-        return text
+        pass
+    x = extraction or {}
+    steps = x.get("steps") or []
+    lines = [
+        f"Running **{x.get('title') or 'this skill'}** in demo sandbox mode (no Gemma key configured).",
+        "",
+        f"Your request: \"{question}\"",
+        "",
+        "Here is exactly how an agent loaded with this skill would handle it, step by step:",
+    ]
+    lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)] or ["1. (The skill has no workflow steps yet.)"]
+    if x.get("constraints"):
+        lines += ["", "Constraints I would respect:"] + [f"- {c}" for c in x["constraints"]]
+    lines += ["", "Add GOOGLE_API_KEY in Vercel to let Gemma answer freely as this skill."]
+    return {"answer": "\n".join(lines), "mode": "demo", "model": "deterministic sandbox (no Gemma call)"}
 
 
 def demo_extract(text: str = "", note: str = "") -> dict:

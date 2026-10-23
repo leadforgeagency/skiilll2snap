@@ -115,10 +115,8 @@ def validate_skill_md(md: str, folder_name: str | None = None) -> dict:
     return {"passed": passed, "score": sum(ok for _, ok, _ in checks), "total": len(checks), "checks": checks}
 
 
-def make_skill_zip(x: dict, audio_bytes: bytes | None = None,
-                   transcript: str = "", narration_script: str = "") -> tuple[str, bytes, str]:
-    """Returns (folder_name, zip_bytes, skill_md). Ready to drop into .agents/skills/
-    With audio: also bundles audio/guide.mp3 (ElevenLabs narration) + transcripts."""
+def make_skill_zip(x: dict) -> tuple[str, bytes, str]:
+    """Returns (folder_name, zip_bytes, skill_md). Ready to drop into .agents/skills/"""
     md = build_skill_md(x)
     folder = slugify(x.get("skill_name") or x.get("title", "my-skill"))
     notes = (
@@ -131,12 +129,6 @@ def make_skill_zip(x: dict, audio_bytes: bytes | None = None,
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(f"{folder}/SKILL.md", md)
         z.writestr(f"{folder}/references/source-notes.md", notes)
-        if audio_bytes:
-            z.writestr(f"{folder}/audio/guide.mp3", audio_bytes)
-        if narration_script:
-            z.writestr(f"{folder}/audio/narration.txt", narration_script)
-        if transcript:
-            z.writestr(f"{folder}/references/voice-transcript.txt", transcript)
     return folder, buf.getvalue(), md
 
 

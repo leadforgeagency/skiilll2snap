@@ -5,6 +5,3 @@ __pycache__/
 *.pyc
 *.zip
 tests/
-.streamlit/
-streamlit_app.py
-requirements-streamlit.txt

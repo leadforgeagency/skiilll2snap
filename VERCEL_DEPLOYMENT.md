@@ -8,50 +8,46 @@ future push redeploys it.
 
 1. Import `leadforgeagency/skiilll2snap` in Vercel (Add New → Project).
 2. Framework preset: **Flask**. Root directory: `./`. No build command changes.
-3. Add environment variables (below) for Production + Preview.
+3. Add `GOOGLE_API_KEY` (below) for Production + Preview.
 4. Deploy. Every push to `main` redeploys automatically.
+
+Live instance: **https://skiilll2snap.vercel.app**
 
 ## Why the project is shaped this way
 
-The first Snap2Skill interface was Streamlit. Streamlit assumes a **persistent
-Python process** holding a live session for each visitor. Vercel does not run
-persistent app servers: it serves static files from a CDN and runs **stateless
-Functions** per HTTP request. Pointing a Streamlit app at Vercel therefore
-cannot work reliably.
+Vercel serves static files from a CDN and runs **stateless Functions** per HTTP
+request — there is no persistent app server and no server-side session. The
+product is designed around that from the start:
 
-So the product was re-architected — without changing its brain or its rules:
+| Concern | Design |
+|---|---|
+| UI | Static HTML/CSS/JS in `public/` (single-screen studio) |
+| Session state | Browser memory in `public/app.js` |
+| Work | One HTTP request per operation (extract / build / validate / repair / sandbox) |
+| Entry point | `app.py` — Flask `app` object, auto-detected by Vercel |
+| Secrets | Vercel Environment Variables |
+| Scaling | CDN + Fluid compute Functions |
 
-| Concern | Streamlit edition | Vercel edition (production) |
-|---|---|---|
-| UI | Python widgets in `streamlit_app.py` | Static HTML/CSS/JS in `public/` |
-| Session state | Server memory (`st.session_state`) | Browser memory in `public/app.js` |
-| Work | One long-lived process | One HTTP request per operation |
-| Entry point | `streamlit run` | `app.py` — Flask `app` object, auto-detected by Vercel |
-| Secrets | local `.env` | Vercel Environment Variables |
-| Scaling | One process | CDN + Fluid compute Functions |
-
-Everything that makes Snap2Skill trustworthy stayed identical: `gemma_client.py`
-(open-weight Gemma), `voice.py` (ElevenLabs), and `skill_builder.py`
-(deterministic builder + 13-point validator) are shared by both interfaces.
+The brain and the rules are plain Python modules shared by the API and the
+tests: `gemma_client.py` (open-weight Gemma — the only model) and
+`skill_builder.py` (deterministic builder + 13-point validator).
 
 ## Repository layout (what Vercel sees)
 
 ```
 app.py                 Flask entry point — Vercel zero-config Flask detection
 public/                Static UI, served from the CDN
-  index.html           Page structure + full product/architecture detail
-  styles.css           Design system (dark, responsive, accessible)
-  app.js               All client state + API calls
+  index.html           Single-screen studio (Input Hub + 3 studio tabs)
+  styles.css           Strict palette: #09090b / #18181b / #27272a / #6366f1 / #fafafa / #a1a1aa
+  app.js               Client state machine + API calls
 web_service.py         JSON validation + orchestration for serverless calls
-gemma_client.py        Gemma extraction / translation (in-memory image parts)
-voice.py               ElevenLabs Scribe / TTS / cloning (optional, fails soft)
+gemma_client.py        Gemma extraction + Live Sandbox answers (in-memory image parts)
 skill_builder.py       SKILL.md builder, validator, repair, zip packaging
 samples.py             Labelled offline samples
-requirements.txt       Vercel/production Python dependencies (no Streamlit)
+requirements.txt       Vercel/production Python dependencies
 vercel.json            Framework = flask; api function maxDuration = 300
 .python-version        3.12
-.vercelignore          Excludes tests, the legacy Streamlit app and caches
-streamlit_app.py       Optional legacy local UI (requirements-streamlit.txt)
+.vercelignore          Excludes tests and caches from the deployment bundle
 ```
 
 ## Request flow
@@ -60,17 +56,15 @@ streamlit_app.py       Optional legacy local UI (requirements-streamlit.txt)
 Browser (public/app.js)
   │  JSON + base64 uploads, one request per action
   ▼
-Flask routes (app.py)  ──►  web_service.py  ──►  gemma_client.py  (Gemma)
-                                            ├─►  voice.py         (ElevenLabs)
-                                            └─►  skill_builder.py (validate + zip)
-  │  JSON response (extraction / SKILL.md / verdict / base64 zip or audio)
+Flask routes (app.py)  ──►  web_service.py  ──►  gemma_client.py   (Gemma: extract, sandbox)
+                                            └─►  skill_builder.py (build, validate, repair, zip)
+  │  JSON response (extraction / flowchart data / SKILL.md / verdict / base64 zip / sandbox answer)
   ▼
-Browser renders, edits, previews, downloads — no server session anywhere
+Browser renders flowchart + spec, downloads, chats — no server session anywhere
 ```
 
 Routes: `GET /api/bootstrap`, `POST /api/extract`, `POST /api/build`,
-`POST /api/validate`, `POST /api/repair`, `POST /api/narrate`,
-`POST /api/speak`, `POST /api/clone`.
+`POST /api/validate`, `POST /api/repair`, `POST /api/sandbox`.
 
 ## Platform limits designed into the code
 
@@ -78,16 +72,14 @@ Routes: `GET /api/bootstrap`, `POST /api/extract`, `POST /api/build`,
   the browser downscales images to ≤1600 px before upload; `web_service.py`
   re-validates every decoded file server-side (≤5 images, ≤3.5 MB each,
   ≤4 MB total).
-* **Statelessness** — no files are written, no session is stored. The editor
-  sends the full extraction with each build request.
+* **Statelessness** — no files are written, no session is stored. The client
+  sends the full extraction with each build/sandbox request.
 * **Duration** — `vercel.json` sets `maxDuration: 300` for `app.py`, the
   current Hobby-plan Fluid compute ceiling, so a slow Gemma call is not cut
   off at the old 10-second default.
-* **Response size** — if a narrated zip would exceed the response ceiling,
+* **Response size** — if a zip would exceed the response ceiling,
   `/api/build` returns the SKILL.md and verdict and tells the user to download
-  the markdown or shorten narration instead of failing silently.
-* **Bundle size** — Streamlit and Pillow were removed from the production
-  `requirements.txt`; the legacy UI has its own `requirements-streamlit.txt`.
+  the markdown instead of failing silently.
 
 ## Environment variables
 
@@ -95,13 +87,12 @@ Set in Vercel → Project → Settings → Environment Variables (Production + P
 
 | Name | Required | Purpose |
 |---|---|---|
-| `GOOGLE_API_KEY` | For live vision | Google AI Studio key; called only with Gemma model IDs |
+| `GOOGLE_API_KEY` | For live vision + sandbox | Google AI Studio key; called only with Gemma model IDs |
 | `GEMMA_MODEL` | No | Defaults to `gemma-4-26b-a4b-it` |
-| `ELEVENLABS_API_KEY` | No | Enables Scribe, narration and cloning |
-| `ELEVENLABS_VOICE_ID` | No | Default/pre-created Professional Clone voice |
 
-Without any keys the deployed app still runs in labelled demo mode: samples,
-pasted-text extraction, validation, repair and zip download all work.
+Without the key the deployed app still runs in labelled demo mode: samples,
+pasted-text extraction, validation, repair, zip download and the deterministic
+sandbox walkthrough all work.
 
 > Changing an environment variable does **not** update already-running
 > deployments. Redeploy (Deployments → ⋯ → Redeploy) or push a commit after
@@ -122,17 +113,13 @@ pip install -r requirements.txt
 python app.py            # http://127.0.0.1:3000  (same code Vercel runs)
 # or: flask --app app run --port 3000
 # or with the Vercel CLI: vercel dev
-
-# Legacy local Streamlit edition (optional):
-pip install -r requirements-streamlit.txt
-streamlit run streamlit_app.py
 ```
 
 ## Verification (all passing, no API keys needed)
 
 ```bash
 python tests/test_skill_builder.py   # deterministic core: builder/validator/zip/repair
-python tests/test_web_service.py       # serverless service layer: payloads, limits, fail-soft voice
+python tests/test_web_service.py       # serverless service layer: payloads, limits, sandbox
 python tests/test_vercel_app.py        # the exact Flask app Vercel runs: routes + static + API over HTTP
 ```
 
@@ -140,8 +127,7 @@ python tests/test_vercel_app.py        # the exact Flask app Vercel runs: routes
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| App loads but says "Demo mode" | `GOOGLE_API_KEY` missing in Vercel | Add it, then Redeploy |
-| Voice buttons warn "not configured" | `ELEVENLABS_API_KEY` missing | Add it, then Redeploy |
+| App loads but badge says "Demo Mode" | `GOOGLE_API_KEY` missing in Vercel | Add it, then Redeploy |
 | `413 FUNCTION_PAYLOAD_TOO_LARGE` | Uploads over 4.5 MB total | Use fewer/smaller snaps; the UI downscales automatically |
 | Old version still live after env change | Env vars apply to new deployments only | Redeploy |
-| Build picks Streamlit | An old commit is being deployed | Ensure the latest `main` (with Flask `app.py`) is deployed |
+| Sandbox answers are step walkthroughs | Demo mode (no Gemma key) | Add `GOOGLE_API_KEY`, then Redeploy |

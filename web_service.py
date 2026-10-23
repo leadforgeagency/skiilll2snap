@@ -1,17 +1,15 @@
 """
 HTTP service layer for the Vercel web deployment.
 
-This module is intentionally independent of Streamlit and Flask routing.
-It converts JSON payloads from ``public/app.js`` into calls to the same
-business modules used by the local Streamlit edition:
+Independent of Flask routing and of any UI framework. It converts JSON
+payloads from ``public/app.js`` into calls to the product core:
 
-* ``gemma_client``  -- open-weight Gemma extraction and translation
-* ``voice``         -- optional ElevenLabs Scribe / TTS / voice cloning
-* ``skill_builder`` -- deterministic SKILL.md builder, validator and zip packager
+* ``gemma_client``  -- open-weight Gemma extraction + Live Sandbox answers
+* ``skill_builder`` -- deterministic SKILL.md builder, validator, repair, zip
 
 Vercel Functions are stateless and have a 4.5 MB request/response ceiling, so
-files cross this boundary as base64 JSON. The browser downscales images before
-upload; this module still validates every decoded payload server-side.
+files cross this boundary as base64 JSON. The browser downscales images
+before upload; this module still validates every decoded payload server-side.
 """
 from __future__ import annotations
 
@@ -21,14 +19,12 @@ import os
 import re
 from typing import Any
 
-import voice as voice_layer
-from gemma_client import extract_skill, translate_text
+from gemma_client import answer_as_skill, extract_skill
 from samples import SAMPLE_EXTRACTIONS
 from skill_builder import (build_skill_md, make_skill_zip, repair_skill_md,
                            slugify, validate_skill_md)
 
 MAX_IMAGE_BYTES = 3_500_000
-MAX_AUDIO_BYTES = 3_500_000
 MAX_TOTAL_IMAGE_BYTES = 4_000_000
 MAX_ZIP_BASE64_CHARS = 4_400_000
 
@@ -120,10 +116,6 @@ def bootstrap_payload() -> dict[str, Any]:
             "model": os.getenv("GEMMA_MODEL", "gemma-4-26b-a4b-it"),
             "mode": "live" if gemma_configured else "demo",
         },
-        "elevenlabs": {
-            "configured": voice_layer.available(),
-            "features": ["Scribe transcription", "Narration", "Instant voice cloning"],
-        },
         "limits": {
             "images": 5,
             "function_payload_mb": 4.5,
@@ -133,24 +125,22 @@ def bootstrap_payload() -> dict[str, Any]:
     }
 
 
-def decode_upload(item: Any, *, kind: str) -> tuple[bytes, str, str]:
-    """Decode one ``{name, mime_type, data_base64}`` object with hard limits."""
+def decode_image(item: Any) -> tuple[bytes, str, str]:
+    """Decode one ``{name, mime_type, data_base64}`` image object with limits."""
     if not isinstance(item, dict):
-        raise PayloadError(f"Each {kind} upload must be an object.")
+        raise PayloadError("Each image upload must be an object.")
     encoded = item.get("data_base64") or item.get("data") or ""
     if not isinstance(encoded, str) or not encoded:
-        raise PayloadError(f"A {kind} upload is missing its base64 data.")
+        raise PayloadError("An image upload is missing its base64 data.")
     if encoded.startswith("data:"):
         encoded = encoded.split(",", 1)[-1]
     try:
         decoded = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise PayloadError(f"A {kind} upload is not valid base64.") from exc
-
-    limit = MAX_IMAGE_BYTES if kind == "image" else MAX_AUDIO_BYTES
-    if len(decoded) > limit:
-        raise PayloadError(f"Each {kind} must be 3.5 MB or smaller on Vercel.")
-    name = _clean_string(item.get("name"), 200) or f"upload-{kind}"
+        raise PayloadError("An image upload is not valid base64.") from exc
+    if len(decoded) > MAX_IMAGE_BYTES:
+        raise PayloadError("Each snap must be 3.5 MB or smaller on Vercel.")
+    name = _clean_string(item.get("name"), 200) or "upload-image"
     mime_type = _clean_string(item.get("mime_type"), 100).lower()
     return decoded, mime_type, name
 
@@ -168,71 +158,33 @@ def extract_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if len(image_items) > 5:
         raise PayloadError("Snap2Skill accepts at most five snaps at once.")
 
-    has_custom_input = bool(text or notes or image_items or payload.get("audio"))
+    has_custom_input = bool(text or notes or image_items)
     if sample_name and not has_custom_input:
         if sample_name not in SAMPLE_EXTRACTIONS:
             raise PayloadError("That sample is not available.")
         extraction = dict(SAMPLE_EXTRACTIONS[sample_name])
         extraction["_mode"] = "sample"
         extraction["_model"] = "Built-in labelled sample (no model call)"
-        return {
-            "extraction": clean_extraction(extraction),
-            "transcript": "",
-            "transcript_language": None,
-            "transcript_mode": "not-used",
-        }
+        return {"extraction": clean_extraction(extraction)}
 
     images: list[tuple[bytes, str]] = []
     total_image_bytes = 0
     for item in image_items:
-        data, mime_type, _name = decode_upload(item, kind="image")
+        data, mime_type, _name = decode_image(item)
         if mime_type and not mime_type.startswith("image/"):
             raise PayloadError("Snap uploads must be image files.")
         total_image_bytes += len(data)
         if total_image_bytes > MAX_TOTAL_IMAGE_BYTES:
-            raise PayloadError("The five snaps together must stay below 4 MB on Vercel.")
+            raise PayloadError("The snaps together must stay below 4 MB on Vercel.")
         images.append((data, mime_type or "image/png"))
 
-    transcript = ""
-    transcript_language = None
-    transcript_mode = "not-used"
-    if payload.get("audio"):
-        audio_bytes, _mime, _name = decode_upload(payload["audio"], kind="audio")
-        spoken = voice_layer.transcribe(audio_bytes)
-        transcript = spoken.get("text", "")
-        transcript_language = spoken.get("language")
-        transcript_mode = spoken.get("_mode", "voice-off")
-        if transcript:
-            notes = f"{notes}\nExpert voice transcript: {transcript}".strip()
-        elif transcript_mode == "voice-off":
-            notes = f"{notes}\n(A voice note was supplied, but ElevenLabs is not configured.)".strip()
-
     extraction = extract_skill(text=text, notes=notes, image_data=images)
-    return {
-        "extraction": clean_extraction(extraction),
-        "transcript": transcript,
-        "transcript_language": transcript_language,
-        "transcript_mode": transcript_mode,
-    }
+    return {"extraction": clean_extraction(extraction)}
 
 
 def build_payload(payload: dict[str, Any]) -> dict[str, Any]:
     extraction = clean_extraction(payload.get("extraction"))
-    audio_bytes = None
-    if payload.get("audio_base64"):
-        audio_bytes, _mime, _name = decode_upload(
-            {"data_base64": payload["audio_base64"], "name": "guide.mp3"},
-            kind="audio",
-        )
-    transcript = _clean_string(payload.get("transcript"), 30_000)
-    narration_script = _clean_string(payload.get("narration_script"), 10_000)
-
-    folder, zip_bytes, markdown = make_skill_zip(
-        extraction,
-        audio_bytes=audio_bytes,
-        transcript=transcript,
-        narration_script=narration_script,
-    )
+    folder, zip_bytes, markdown = make_skill_zip(extraction)
     zip_base64 = base64.b64encode(zip_bytes).decode("ascii")
     zip_included = len(zip_base64) <= MAX_ZIP_BASE64_CHARS
     return {
@@ -244,8 +196,7 @@ def build_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "zip_size_bytes": len(zip_bytes),
         "zip_included": zip_included,
         "zip_warning": "" if zip_included else (
-            "The completed zip is too large for one Vercel response. "
-            "Download SKILL.md or shorten the narration audio."
+            "The completed zip is too large for one Vercel response. Download SKILL.md instead."
         ),
     }
 
@@ -272,89 +223,16 @@ def repair_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def narrate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def sandbox_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Live Sandbox: answer a user request AS the compiled skill."""
     extraction = clean_extraction(payload.get("extraction"))
-    language = _clean_string(payload.get("language"), 80) or "English"
-    voice_id = _clean_string(payload.get("voice_id"), 200) or None
-    script = voice_layer.narration_script(extraction)
-    if language.lower() != "english":
-        script = translate_text(script, language)
-
-    if not voice_layer.available():
-        return {
-            "script": script,
-            "audio_base64": "",
-            "audio_mime": "audio/mpeg",
-            "mode": "voice-off",
-            "warning": "ElevenLabs is not configured in Vercel. The script is ready and the browser device voice can read it.",
-        }
-
-    audio = voice_layer.speak(
-        script,
-        voice_id=voice_id,
-        multilingual=language.lower() != "english",
-    )
-    if not audio:
-        return {
-            "script": script,
-            "audio_base64": "",
-            "audio_mime": "audio/mpeg",
-            "mode": "elevenlabs-failed",
-            "warning": "ElevenLabs did not return audio. Check its Vercel key, voice ID and credits; the text skill is unaffected.",
-        }
+    question = _clean_string(payload.get("question"), 2_000)
+    if not question:
+        raise PayloadError("Type a request to test the skill with.")
+    skill_md = _clean_string(payload.get("skill_md"), 100_000) or build_skill_md(extraction)
+    result = answer_as_skill(skill_md, question, extraction)
     return {
-        "script": script,
-        "audio_base64": base64.b64encode(audio).decode("ascii"),
-        "audio_mime": "audio/mpeg",
-        "mode": "elevenlabs",
-        "warning": "",
-    }
-
-
-def speak_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    text = _clean_string(payload.get("text"), 1_500)
-    if not text:
-        raise PayloadError("There is no step text to speak.")
-    if not voice_layer.available():
-        return {
-            "audio_base64": "",
-            "audio_mime": "audio/mpeg",
-            "mode": "voice-off",
-            "warning": "ElevenLabs is not configured; use the browser device voice instead.",
-        }
-    audio = voice_layer.speak(text, voice_id=_clean_string(payload.get("voice_id"), 200) or None)
-    return {
-        "audio_base64": base64.b64encode(audio).decode("ascii") if audio else "",
-        "audio_mime": "audio/mpeg",
-        "mode": "elevenlabs" if audio else "elevenlabs-failed",
-        "warning": "" if audio else "ElevenLabs did not return audio for this step.",
-    }
-
-
-def clone_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    if payload.get("consent") is not True:
-        raise PayloadError("Voice cloning requires explicit consent from the voice owner.")
-    name = _clean_string(payload.get("name"), 200)
-    if not name:
-        raise PayloadError("Give the expert voice a name.")
-    items = payload.get("samples") or []
-    if not isinstance(items, list) or not items:
-        raise PayloadError("Upload at least one voice sample.")
-    if len(items) > 5:
-        raise PayloadError("Use at most five voice samples.")
-
-    samples: list[bytes] = []
-    total = 0
-    for item in items:
-        data, _mime, _name = decode_upload(item, kind="audio")
-        total += len(data)
-        if total > MAX_TOTAL_IMAGE_BYTES:
-            raise PayloadError("Voice samples together must stay below 4 MB on Vercel.")
-        samples.append(data)
-
-    result = voice_layer.clone_instant_voice(name, samples)
-    return {
-        "voice_id": result.get("voice_id"),
-        "mode": result.get("_mode", "unknown"),
-        "warning": "" if result.get("voice_id") else "Cloning did not complete. Check the ElevenLabs key, plan and sample quality.",
+        "answer": result["answer"],
+        "mode": result["mode"],
+        "model": result["model"],
     }
