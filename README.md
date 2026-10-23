@@ -31,14 +31,14 @@ Output structure:
   audio/narration.txt         ← the exact narration script
 ```
 
-**Just add your keys and run** — one file, `.env`:
+**Just add your keys and deploy** — the production web app is **Vercel-native** (static UI in `public/` + Flask Functions in `app.py`; full guide in `VERCEL_DEPLOYMENT.md`):
 
 ```bash
-GOOGLE_API_KEY=...        # required — Google AI Studio, used ONLY for open-weight Gemma
-ELEVENLABS_API_KEY=...    # optional — enables the whole voice layer; without it the app runs text-only
+GOOGLE_API_KEY=...        # Vercel env var — Google AI Studio, used ONLY for open-weight Gemma
+ELEVENLABS_API_KEY=...    # optional Vercel env var — enables the whole voice layer
 ```
 
-The sidebar shows a live status panel (key found / not found — never the key itself). Every ElevenLabs feature fails soft: no key or an API error disables voice only, never the core pipeline.
+The web UI shows a live status panel (key configured / not configured — never the key itself). Every ElevenLabs feature fails soft: no key or an API error disables voice only, never the core pipeline. Without any keys the deployed app still runs in labelled demo mode.
 
 Drop the folder into `.agents/skills/` (or your agent's skills directory) and any compatible agent — Claude Code, Cursor, Copilot, OpenCode and others that read the open standard — can run that know-how forever.
 
@@ -54,16 +54,20 @@ Drop the folder into `.agents/skills/` (or your agent's skills directory) and an
 | Agent Skill standard | Every generated skill + this project's own skill pass `validate_skill_md()`; format = YAML frontmatter (`name`, `description`, `license`, `metadata`) + markdown body |
 | Substantial work | Vision extraction schema with honesty rules, deterministic SKILL.md builder, 13-point validator, zip packaging, offline demo mode, tests |
 
-**Dependencies:** Python, Streamlit (Apache-2.0), `google-genai` (Apache-2.0), `elevenlabs` SDK, `python-dotenv`, Pillow, requests.
+**Dependencies (production/Vercel):** Python, Flask, `google-genai` (Apache-2.0), `elevenlabs` SDK, `python-dotenv`, requests. The optional legacy Streamlit UI lives in `streamlit_app.py` with its own `requirements-streamlit.txt`.
 
-## Run it
+## Deploy it (Vercel)
+
+Import this repository in Vercel → Framework: **Flask**, root `./` → add `GOOGLE_API_KEY` (and optionally `ELEVENLABS_API_KEY`) → Deploy. Every push to `main` redeploys automatically. Step-by-step, limits, and troubleshooting: **`VERCEL_DEPLOYMENT.md`**.
+
+## Run it locally
 
 ```bash
 git clone <your-repo-url>
 cd snap2skill
 pip install -r requirements.txt
 cp .env.example .env   # add your Google AI Studio key
-streamlit run app.py
+python app.py          # the same Flask app Vercel runs → http://127.0.0.1:3000
 ```
 
 No key / no Wi-Fi? Load a built-in sample extraction, or paste steps as text — demo mode still builds, validates, and zips a real skill offline.
@@ -71,7 +75,9 @@ No key / no Wi-Fi? Load a built-in sample extraction, or paste steps as text —
 ## Tests
 
 ```bash
-python tests/test_skill_builder.py   # builder + validator, no API key needed
+python tests/test_skill_builder.py   # deterministic core, no API key needed
+python tests/test_web_service.py       # serverless service layer
+python tests/test_vercel_app.py        # the exact Flask app Vercel runs, over HTTP
 ```
 
 ## Limitations, honestly

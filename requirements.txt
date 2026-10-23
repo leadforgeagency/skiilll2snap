@@ -1,6 +1,7 @@
-streamlit>=1.40
+# Production dependencies for the Vercel web application (app.py).
+# Vercel installs this file for the Python Functions that power the web UI.
+Flask>=3.0
 google-genai>=1.0
 elevenlabs>=1.0
 python-dotenv>=1.0
-Pillow>=10.0
 requests>=2.31

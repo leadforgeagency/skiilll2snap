@@ -1,0 +1,10 @@
+# Deployment-only exclusions. These files stay in GitHub; Vercel does not need them.
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.zip
+tests/
+.streamlit/
+streamlit_app.py
+requirements-streamlit.txt

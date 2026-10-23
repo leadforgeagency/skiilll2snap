@@ -74,20 +74,31 @@ def _parse(raw: str) -> dict:
 
 
 def extract_skill(text: str = "", notes: str = "", image_path: str | None = None,
-                  image_mime: str = "image/png", image_paths: list[tuple[str, str]] | None = None) -> dict:
+                  image_mime: str = "image/png", image_paths: list[tuple[str, str]] | None = None,
+                  image_data: list[tuple[bytes, str]] | None = None) -> dict:
     """Returns extraction dict + _model + _mode ('gemma'|'demo').
-    Multi-snap: image_paths = [(path, mime), ...] merges up to 5 snaps in order."""
+
+    Multi-snap inputs can be supplied either as local paths (Streamlit/local
+    use) or as in-memory ``(bytes, mime_type)`` pairs (Vercel Functions, where
+    uploaded files never need to be written to a durable filesystem).
+    Up to five snaps are merged in order.
+    """
     try:
         prompt = PROMPT.format(notes=notes or "none", text=text or "(see image)")
         paths = list(image_paths or [])
         if image_path:
             paths.insert(0, (image_path, image_mime))
-        if paths:
+        in_memory = list(image_data or [])
+        if paths or in_memory:
             from google.genai import types
             contents = []
             for p, mime in paths[:5]:
                 with open(p, "rb") as f:
                     contents.append(types.Part.from_bytes(data=f.read(), mime_type=mime))
+            remaining = max(0, 5 - len(contents))
+            for data, mime in in_memory[:remaining]:
+                if data:
+                    contents.append(types.Part.from_bytes(data=data, mime_type=mime or "image/png"))
             contents.append(prompt)
         else:
             contents = prompt
